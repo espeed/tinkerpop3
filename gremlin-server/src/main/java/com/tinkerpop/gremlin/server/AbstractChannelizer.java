@@ -5,10 +5,14 @@ import com.tinkerpop.gremlin.groovy.engine.GremlinExecutor;
 import com.tinkerpop.gremlin.server.handler.IteratorHandler;
 import com.tinkerpop.gremlin.server.handler.OpExecutorHandler;
 import com.tinkerpop.gremlin.server.handler.OpSelectorHandler;
+import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.ssl.SslHandler;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.handler.codec.spdy.SpdyOrHttpChooser.SelectedProtocol;
 import io.netty.util.concurrent.EventExecutorGroup;
 import org.javatuples.Pair;
 import org.slf4j.Logger;
@@ -27,6 +31,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.stream.Stream;
+
+import java.util.Arrays;
 
 /**
  * A base implementation for the {@code Channelizer} which does a basic configuration of the the pipeline, one that
@@ -83,15 +89,22 @@ public abstract class AbstractChannelizer extends ChannelInitializer<SocketChann
         // and fail the server startup
         configureSerializers();
 
-        this.sslEngine = settings.optionalSsl().isPresent() && settings.ssl.enabled ? Optional.ofNullable(createSslEngine()) : Optional.empty();
+        // this.sslEngine = settings.optionalSsl().isPresent() && 
+        //     settings.ssl.enabled ? 
+        //     Optional.ofNullable(createSslEngine()) : Optional.empty();
+
     }
 
     @Override
     public void initChannel(final SocketChannel ch) throws Exception {
         final ChannelPipeline pipeline = ch.pipeline();
 
-        sslEngine.ifPresent(ssl -> pipeline.addLast(PIPELINE_SSL, new SslHandler(ssl)));
-
+        //sslEngine.ifPresent(ssl -> pipeline.addLast(PIPELINE_SSL, new SslHandler(ssl)));
+        final SslHandler sslHandler = createSslHandler(ch.alloc());
+        if (sslHandler != null) {
+            pipeline.addLast(PIPELINE_SSL, sslHandler);
+        }
+        
         // the implementation provides the method by which Gremlin Server will process requests.  the end of the
         // pipeline must decode to an incoming RequestMessage instances and encode to a outgoing ResponseMessage
         // instance
@@ -146,46 +159,107 @@ public abstract class AbstractChannelizer extends ChannelInitializer<SocketChann
         }
     }
 
-    private SSLEngine createSslEngine() {
+    private SslHandler createSslHandler(ByteBufAllocator alloc) {
         try {
-            logger.info("SSL was enabled.  Initializing SSLEngine instance...");
-            final SSLEngine engine = createSSLContext(settings).createSSLEngine();
-            engine.setUseClientMode(false);
-            logger.info("SSLEngine was properly configured and initialized.");
-            return engine;
+            logger.info("SSL was enabled.  Initializing SSLHandler instance...");
+            if (settings.ssl.certChainPemFile != null && settings.ssl.keyStoreFile != null) {
+                SslContext sslCtx = SslContext.newServerContext(settings.ssl.certChainPemFile,
+                                                            settings.ssl.keyStoreFile, 
+                                                            settings.ssl.keyStorePassword,
+                                                            settings.ssl.ciphers,
+                                                            Arrays.asList(SelectedProtocol.SPDY_3_1.protocolName(), 
+                                                                          SelectedProtocol.HTTP_1_1.protocolName()),
+                                                            settings.ssl.sessionCacheSize, 
+                                                            settings.ssl.sessionTimeOut);
+                final SslHandler sslHandler = sslCtx.newHandler(alloc);
+                logger.info("SSlHandler was properly configured and initialized.");
+                return sslHandler;
+            } else {
+                logger.info("SSL certfile not set. Trying default certificate...");
+                SelfSignedCertificate cert = null;
+
+                try {
+                    cert = new SelfSignedCertificate();
+                } catch (java.security.cert.CertificateException certex) {
+                    logger.warn("SSL could not be enabled.  Check the ssl section of the configuration file.", certex);
+                    return null;
+                }
+                
+                if (cert != null) {
+                    SslContext sslCtx = SslContext.newServerContext(null, 
+                                                                    cert.certificate(),
+                                                                    cert.privateKey(), 
+                                                                    null,
+                                                                    settings.ssl.ciphers,
+                                                            Arrays.asList(SelectedProtocol.SPDY_3_1.protocolName(), 
+                                                                          SelectedProtocol.HTTP_1_1.protocolName()),
+                                                            settings.ssl.sessionCacheSize, 
+                                                            settings.ssl.sessionTimeOut);
+                    final SslHandler sslHandler = sslCtx.newHandler(alloc);
+                    logger.info("SSlHandler was properly configured and initialized.");
+                    return sslHandler;
+                } 
+
+                return null;
+            }
+
+
         } catch (Exception ex) {
             logger.warn("SSL could not be enabled.  Check the ssl section of the configuration file.", ex);
             return null;
         }
     }
 
-    private SSLContext createSSLContext(final Settings settings) throws Exception {
-        final Settings.SslSettings sslSettings = settings.ssl;
 
-        TrustManager[] managers = null;
-        if (sslSettings.trustStoreFile != null) {
-            final KeyStore ts = KeyStore.getInstance(Optional.ofNullable(sslSettings.trustStoreFormat).orElseThrow(() -> new IllegalStateException("The trustStoreFormat is not set")));
-            try (final InputStream trustStoreInputStream = new FileInputStream(Optional.ofNullable(sslSettings.trustStoreFile).orElseThrow(() -> new IllegalStateException("The trustStoreFile is not set")))) {
-                ts.load(trustStoreInputStream, sslSettings.trustStorePassword.toCharArray());
-            }
+    //
+    // using Netty's SslContext instead - espeed
+    // https://github.com/netty/netty/blob/4.1/handler/src/main/java/io/netty/handler/ssl/SslContext.java
+    // https://github.com/netty/netty/blob/4.1/example/src/main/java/io/netty/example/spdy/server/SpdyServer.java
+    // 
 
-            final String trustStoreAlgorithm = Optional.ofNullable(sslSettings.trustStoreAlgorithm).orElse(TrustManagerFactory.getDefaultAlgorithm());
-            final TrustManagerFactory tmf = TrustManagerFactory.getInstance(trustStoreAlgorithm);
-            tmf.init(ts);
-            managers = tmf.getTrustManagers();
-        }
+    // private SSLEngine createSslEngine() {
+    //     try {
+    //         logger.info("SSL was enabled.  Initializing SSLEngine instance...");            
+    //         final SSLEngine engine = createSSLContext(settings).createSSLEngine();
+    //         engine.setUseClientMode(false);
+    //         logger.info("SSLEngine was properly configured and initialized.");
+    //         return engine;
+    //     } catch (Exception ex) {
+    //         logger.warn("SSL could not be enabled.  Check the ssl section of the configuration file.", ex);
+    //         return null;
+    //     }
+    // }
 
-        final KeyStore ks = KeyStore.getInstance(Optional.ofNullable(sslSettings.keyStoreFormat).orElseThrow(() -> new IllegalStateException("The keyStoreFormat is not set")));
-        try (final InputStream keyStoreInputStream = new FileInputStream(Optional.ofNullable(sslSettings.keyStoreFile).orElseThrow(() -> new IllegalStateException("The keyStoreFile is not set")))) {
-            ks.load(keyStoreInputStream, sslSettings.keyStorePassword.toCharArray());
-        }
+    // private SSLContext createSSLContext(final Settings settings) throws Exception {
+    //     final Settings.SslSettings sslSettings = settings.ssl;
 
-        final String keyManagerAlgorithm = Optional.ofNullable(sslSettings.keyManagerAlgorithm).orElse(KeyManagerFactory.getDefaultAlgorithm());
-        final KeyManagerFactory kmf = KeyManagerFactory.getInstance(keyManagerAlgorithm);
-        kmf.init(ks, Optional.ofNullable(sslSettings.keyManagerPassword).orElseThrow(() -> new IllegalStateException("The keyManagerPassword is not set")).toCharArray());
+    //     TrustManager[] managers = null;
+    //     if (sslSettings.trustStoreFile != null) {
+    //         final KeyStore ts = KeyStore.getInstance(Optional.ofNullable(sslSettings.trustStoreFormat).orElseThrow(() -> new IllegalStateException("The trustStoreFormat is not set")));
+    //         try (final InputStream trustStoreInputStream = new FileInputStream(Optional.ofNullable(sslSettings.trustStoreFile).orElseThrow(() -> new IllegalStateException("The trustStoreFile is not set")))) {
+    //             ts.load(trustStoreInputStream, sslSettings.trustStorePassword.toCharArray());
+    //         }
 
-        final SSLContext serverContext = SSLContext.getInstance("TLS");
-        serverContext.init(kmf.getKeyManagers(), managers, null);
-        return serverContext;
-    }
+    //         final String trustStoreAlgorithm = Optional.ofNullable(sslSettings.trustStoreAlgorithm).orElse(TrustManagerFactory.getDefaultAlgorithm());
+    //         final TrustManagerFactory tmf = TrustManagerFactory.getInstance(trustStoreAlgorithm);
+    //         tmf.init(ts);
+    //         managers = tmf.getTrustManagers();
+    //     }
+
+    //     final KeyStore ks = KeyStore.getInstance(Optional.ofNullable(sslSettings.keyStoreFormat).orElseThrow(() -> new IllegalStateException("The keyStoreFormat is not set")));
+    //     try (final InputStream keyStoreInputStream = new FileInputStream(Optional.ofNullable(sslSettings.keyStoreFile).orElseThrow(() -> new IllegalStateException("The keyStoreFile is not set")))) {
+    //         ks.load(keyStoreInputStream, sslSettings.keyStorePassword.toCharArray());
+    //     }
+
+    //     final String keyManagerAlgorithm = Optional.ofNullable(sslSettings.keyManagerAlgorithm).orElse(KeyManagerFactory.getDefaultAlgorithm());
+    //     final KeyManagerFactory kmf = KeyManagerFactory.getInstance(keyManagerAlgorithm);
+    //     kmf.init(ks, Optional.ofNullable(sslSettings.keyManagerPassword).orElseThrow(() -> new IllegalStateException("The keyManagerPassword is not set")).toCharArray());
+
+    //     final SSLContext serverContext = SSLContext.getInstance("TLS");
+    //     serverContext.init(kmf.getKeyManagers(), managers, null);
+    //     return serverContext;
+    // }
+
+
+
 }

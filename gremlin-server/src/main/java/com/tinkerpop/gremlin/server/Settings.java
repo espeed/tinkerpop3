@@ -266,15 +266,29 @@ public class Settings {
      */
     public static class SslSettings {
         public boolean enabled = false;
-        public String keyManagerAlgorithm = "SunX509";
-        public String keyStoreFormat = "JKS";
-        public String keyStoreFile = null;
+
+        public File certChainPemFile = null;  
+        public File keyStoreFile = null;
         public String keyStorePassword = null;
-        public String keyManagerPassword = null;
-        public String trustStoreFile = null;
-        public String trustStoreFormat = null;
-        public String trustStorePassword = null;
-        public String trustStoreAlgorithm = null;
+        public Iterable<String> ciphers = null;
+        public long sessionCacheSize = 0;
+        public long sessionTimeOut = 0;
+
+        // 
+        // now using Netty's SslContext class and
+        // the following settings aren't being used - espeed
+        //
+        // public String keyManagerAlgorithm = "SunX509";
+        // public String keyStoreFormat = "JKS";
+        // public String keyStoreFile = null;
+        // public String keyStorePassword = null;
+        // public String keyManagerPassword = null;
+        // public String trustStoreFile = null;
+        // public String trustStoreFormat = null;
+        // public String trustStorePassword = null;
+        // public String trustStoreAlgorithm = null;
+
+
     }
 
     /**

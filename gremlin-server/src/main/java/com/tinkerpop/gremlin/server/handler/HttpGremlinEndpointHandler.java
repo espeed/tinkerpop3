@@ -7,10 +7,12 @@ import com.tinkerpop.gremlin.driver.message.ResultType;
 import com.tinkerpop.gremlin.driver.ser.JsonMessageSerializerV1d0;
 import com.tinkerpop.gremlin.driver.ser.MessageTextSerializer;
 import com.tinkerpop.gremlin.groovy.engine.GremlinExecutor;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpHeaders;
@@ -31,8 +33,9 @@ import static io.netty.handler.codec.http.HttpVersion.*;
 
 /**
  * @author Stephen Mallette (http://stephen.genoprime.com)
+ * @author James Thornton (http://jamesthornton.com)
  */
-public class HttpGremlinEndpointHandler extends ChannelInboundHandlerAdapter {
+public class HttpGremlinEndpointHandler extends SimpleChannelInboundHandler {
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
     private final Map<String, MessageSerializer> serializers;
@@ -46,13 +49,39 @@ public class HttpGremlinEndpointHandler extends ChannelInboundHandlerAdapter {
         this.gremlinExecutor = gremlinExecutor;
     }
 
-    @Override
-    public void channelReadComplete(final ChannelHandlerContext ctx) {
-        ctx.flush();
-    }
 
+    // @Override
+    // public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+    //     boolean release = true;
+    //     try {
+    //         if (acceptInboundMessage(msg)) {
+    //             @SuppressWarnings("unchecked")
+    //                 I imsg = (I) msg;
+    //             channelRead0(ctx, imsg);
+    //         } else {
+    //             release = false;
+    //             ctx.fireChannelRead(msg);
+    //         }
+    //     } finally {
+    //         if (autoRelease && release) {
+    //             ReferenceCountUtil.release(msg);
+    //         }
+    //     }
+    // }
+
+    /**
+     * <strong>Please keep in mind that this method will be renamed to
+     * {@code messageReceived(ChannelHandlerContext, I)} in 5.0.</strong>
+     *
+     * Is called for each message of type {@link I}.
+     *
+     * @param ctx           the {@link ChannelHandlerContext} which this {@link SimpleChannelInboundHandler}
+     *                      belongs to
+     * @param msg           the message to handle
+     * @throws Exception    is thrown if an error occurred
+     */
     @Override
-    public void channelRead(final ChannelHandlerContext ctx, final Object msg) {
+    public void channelRead0(final ChannelHandlerContext ctx, final Object msg) {
         if (msg instanceof HttpRequest) {
             final HttpRequest req = (HttpRequest) msg;
 
@@ -76,8 +105,10 @@ public class HttpGremlinEndpointHandler extends ChannelInboundHandlerAdapter {
                         .contents(ResultType.COLLECTION)
                         .result(gremlinExecutor.eval(script).get()).create();
 
-                final FullHttpResponse response = new DefaultFullHttpResponse(HTTP_1_1, OK, Unpooled.wrappedBuffer(
-                        serializer.serializeResponseAsString(responseMessage).getBytes(UTF8)));
+                final ByteBuf content = Unpooled.wrappedBuffer(
+                                          serializer.serializeResponseAsString(responseMessage).getBytes(UTF8));
+
+                final FullHttpResponse response = new DefaultFullHttpResponse(HTTP_1_1, OK, content);
                 response.headers().set(CONTENT_TYPE, "application/json");
                 response.headers().set(CONTENT_LENGTH, response.content().readableBytes());
 
@@ -96,6 +127,11 @@ public class HttpGremlinEndpointHandler extends ChannelInboundHandlerAdapter {
                 throw new RuntimeException(ex);
             }
         }
+    }
+
+    @Override
+    public void channelReadComplete(final ChannelHandlerContext ctx) {
+        ctx.flush();
     }
 
     @Override

@@ -55,6 +55,9 @@ public class GremlinServer {
         try {
             final ServerBootstrap b = new ServerBootstrap();
 
+            // SO_BACKLOG is set in the Netty Spdy example
+            // b.option(ChannelOption.SO_BACKLOG, 1024);
+
             // when high value is reached then the channel becomes non-writeable and stays like that until the
             // low value is so that there is time to recover
             b.childOption(ChannelOption.WRITE_BUFFER_LOW_WATER_MARK, settings.writeBufferLowWaterMark);

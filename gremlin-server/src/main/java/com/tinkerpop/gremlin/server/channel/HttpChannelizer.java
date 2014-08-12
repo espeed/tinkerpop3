@@ -20,7 +20,10 @@ public class HttpChannelizer extends AbstractChannelizer {
         if (logger.isDebugEnabled())
             pipeline.addLast(new LoggingHandler("log-io", LogLevel.DEBUG));
 
-        pipeline.addLast("http-server", new HttpServerCodec());
+        // pipeline.addLast("http-server", new HttpServerCodec());
+
+        // Negotiates with the browser if SPDY or HTTP is going to be used
+        pipeline.addLast("http-server", new SpdyOrHttpHandler());
 
         if (logger.isDebugEnabled())
             pipeline.addLast(new LoggingHandler("http-io", LogLevel.DEBUG));
